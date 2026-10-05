@@ -109,7 +109,7 @@ locks (`FOR UPDATE SKIP LOCKED`) and unique keys.
 
 | Loop | Package | Does |
 |---|---|---|
-| Ingest | `worker` | Symbolicate, group and store a batch, one write per issue; alerts, emails and hourly counts in the same transaction. A failed batch is retried event by event, so a bad event fails alone |
+| Ingest | `worker` | Symbolicate, group and store a batch, one write per issue; alerts, emails and hourly counts in the same transaction. Past an issue's hourly storage limit, events are counted but only sampled (`limitStorage`). A failed batch is retried event by event, so a bad event fails alone |
 | Notifier | `alert` | Deliver the notification outbox to Slack and Linear, with retries |
 | Mailer | `email` | Schedule digests (deduplicated per user and period) and deliver the email outbox |
 | Linear sync | `alert` | Every five minutes, resolve issues whose Linear issue was completed |

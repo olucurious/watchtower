@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/olucurious/watchtower/internal/event"
 )
 
@@ -214,5 +216,155 @@ func TestHourlyRollupMatchesEvents(t *testing.T) {
 	s.pool.QueryRow(ctx, `select count(*) from events where occurred_at >= $1 and occurred_at < $2`, since, until).Scan(&want)
 	if dg.Events != want || len(dg.Busiest) != 1 || dg.Busiest[0].TimesSeen != want {
 		t.Errorf("digest events %d, busiest %+v, want %d", dg.Events, dg.Busiest, want)
+	}
+}
+
+func countRows(t *testing.T, s *Store, sql string, args ...any) int64 {
+	t.Helper()
+	var n int64
+	if err := s.pool.QueryRow(context.Background(), sql, args...).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// An error storm stores the first events of each hour and a sample after
+// that, but counts every event exactly, across many batches.
+func TestSpikeProtectionStoresASampleAndCountsAll(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	s.StoredPerIssueHour = 5
+	p, _ := s.CreateProject(ctx, "storm", "Storm")
+	at := time.Now().UTC().Truncate(time.Hour).Add(30 * time.Minute)
+	const total = 2005
+	for start := 0; start < total; start += 500 {
+		var batch []event.Event
+		for i := start; i < min(start+500, total); i++ {
+			batch = append(batch, testEvent(p.ID, manyID(i+1), at))
+		}
+		if err := s.Accept(ctx, batch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var out Outcome
+	for {
+		o, err := s.ProcessQueue(ctx, 100, group)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if o.Stored+o.CountedOnly+o.Duplicates == 0 {
+			break
+		}
+		out.add(o)
+	}
+	// Positions 0-4 are stored, then every 1000th: 1000 and 2000.
+	if out.Stored != 7 || out.CountedOnly != total-7 {
+		t.Errorf("stored %d, counted only %d", out.Stored, out.CountedOnly)
+	}
+	if n := countRows(t, s, `select count(*) from events`); n != 7 {
+		t.Errorf("%d event rows, want 7", n)
+	}
+	if n := countRows(t, s, `select times_seen from issues`); n != total {
+		t.Errorf("times_seen %d, want %d", n, total)
+	}
+	if n := countRows(t, s, `select sum(events)::bigint from issue_hourly`); n != total {
+		t.Errorf("hourly rollup %d, want %d", n, total)
+	}
+}
+
+// The event that reopens a resolved issue is stored even past the limit,
+// since the regression's alert and email link to it.
+func TestSpikeProtectionKeepsTheRegressingEvent(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	s.StoredPerIssueHour = 2
+	p, _ := s.CreateProject(ctx, "reg", "Reg")
+	now := time.Now().UTC()
+	var batch []event.Event
+	for i := 1; i <= 5; i++ {
+		batch = append(batch, testEvent(p.ID, manyID(i), now))
+	}
+	ingest(t, s, batch...)
+	issues, _ := s.ListIssues(ctx, IssueFilter{Project: "reg"})
+	if _, err := s.SetIssuesStatus(ctx, []int64{issues.Issues[0].ID}, "resolved", "ada"); err != nil {
+		t.Fatal(err)
+	}
+	ingest(t, s, testEvent(p.ID, manyID(6), now))
+	if n := countRows(t, s, `select count(*) from events where event_id = $1`, manyID(6)); n != 1 {
+		t.Error("the regressing event was not stored")
+	}
+	if n := countRows(t, s, `select times_seen from issues`); n != 6 {
+		t.Errorf("times_seen %d, want 6", n)
+	}
+}
+
+func TestSpikeProtectionOffStoresEverything(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	s.StoredPerIssueHour = 0
+	p, _ := s.CreateProject(ctx, "all", "All")
+	var batch []event.Event
+	for i := 1; i <= 50; i++ {
+		batch = append(batch, testEvent(p.ID, manyID(i), time.Now()))
+	}
+	ingest(t, s, batch...)
+	if n := countRows(t, s, `select count(*) from events`); n != 50 {
+		t.Errorf("%d event rows, want 50", n)
+	}
+}
+
+// A retried event that is only counted is still recognised within its
+// batch, and counted once.
+func TestCountOnlyRetryCountedOnce(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	s.StoredPerIssueHour = 1
+	p, _ := s.CreateProject(ctx, "retry", "Retry")
+	now := time.Now().UTC()
+	if err := s.Accept(ctx, []event.Event{testEvent(p.ID, manyID(1), now), testEvent(p.ID, manyID(2), now), testEvent(p.ID, manyID(2), now)}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.ProcessQueue(ctx, 100, group)
+	if err != nil || out.Stored != 1 || out.CountedOnly != 1 || out.Duplicates != 1 {
+		t.Fatalf("outcome %+v: %v", out, err)
+	}
+	if n := countRows(t, s, `select times_seen from issues`); n != 2 {
+		t.Errorf("times_seen %d, want 2", n)
+	}
+}
+
+// Alerts link only to events that were stored.
+func TestAlertsLinkOnlyToStoredEvents(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	s.StoredPerIssueHour = 1
+	p, _ := s.CreateProject(ctx, "web", "Web")
+	three := 3
+	if _, err := s.CreateAlertChannel(ctx, "web", "slack", AlertTarget{Sealed: []byte("sealed"), Hint: "hint"},
+		AlertRules{Name: "all", OnNewIssue: true, FrequencyThreshold: &three, MinLevel: "error"}, 0); err != nil {
+		t.Fatal(err)
+	}
+	var batch []event.Event
+	for i := 1; i <= 5; i++ {
+		batch = append(batch, testEvent(p.ID, manyID(i), time.Now()))
+	}
+	ingest(t, s, batch...)
+	rows, err := s.pool.Query(ctx, `select kind, coalesce(detail->>'event_id', '') from notifications order by id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kinds []string
+	var kind, id string
+	if _, err := pgx.ForEachRow(rows, []any{&kind, &id}, func() error {
+		kinds = append(kinds, kind)
+		if id != "" && countRows(t, s, `select count(*) from events where event_id = $1`, id) == 0 {
+			t.Errorf("%s alert links to unstored event %s", kind, id)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(kinds) != "[new_issue frequency]" {
+		t.Errorf("alerts %v", kinds)
 	}
 }

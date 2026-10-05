@@ -152,8 +152,9 @@ func alertRules(ctx context.Context, tx pgx.Tx, projectID int64) ([]alertChannel
 // events (in queue order), inside the worker's transaction. trigger is
 // "new_issue" or "regression" when the first event changed the issue's
 // state, otherwise "". Channel filters apply event by event, as if each
-// event were processed alone.
-func queueAlerts(ctx context.Context, tx pgx.Tx, channels []alertChannelRule, events []*event.Event, issueID int64, issueStatus, trigger string) error {
+// event were processed alone. stored marks the events that were stored:
+// only those can be linked to.
+func queueAlerts(ctx context.Context, tx pgx.Tx, channels []alertChannelRule, events []*event.Event, stored map[*event.Event]bool, issueID int64, issueStatus, trigger string) error {
 	if issueStatus == "muted" || len(channels) == 0 {
 		return nil
 	}
@@ -176,10 +177,13 @@ func queueAlerts(ctx context.Context, tx pgx.Tx, channels []alertChannelRule, ev
 		if c.threshold == nil {
 			continue
 		}
-		var e *event.Event // the latest event this channel would hear about
+		var e, linkable *event.Event // the latest event this channel would hear about, and the latest stored
 		for _, cand := range candidates {
 			if matches(cand) {
 				e = cand
+				if stored[cand] {
+					linkable = cand
+				}
 			}
 		}
 		if e == nil {
@@ -196,17 +200,15 @@ func queueAlerts(ctx context.Context, tx pgx.Tx, channels []alertChannelRule, ev
 			continue
 		}
 		if hourCount == nil {
-			// Counting stops at the largest threshold, so a busy issue
-			// doesn't cost a count of every event in the hour.
-			limit := 0
-			for _, c := range channels {
-				if c.threshold != nil {
-					limit = max(limit, *c.threshold)
-				}
-			}
+			// Events in the last 60 minutes, from the hourly rollup, which
+			// counts every event, stored or not: this hour's, plus the
+			// share of the previous hour still inside the window.
 			var n int64
-			if err := tx.QueryRow(ctx, `select count(*) from (select from events where issue_id = $1 and occurred_at > now() - interval '1 hour' limit $2) q`,
-				issueID, limit).Scan(&n); err != nil {
+			if err := tx.QueryRow(ctx, `
+				with now_hour as (select date_trunc('hour', now(), 'UTC') as h)
+				select coalesce(sum(case when hour = h then events
+					else events * (1 - extract(epoch from now() - h) / 3600) end), 0)::bigint
+				from issue_hourly, now_hour where issue_id = $1 and hour >= h - interval '1 hour'`, issueID).Scan(&n); err != nil {
 				return err
 			}
 			hourCount = &n
@@ -214,7 +216,11 @@ func queueAlerts(ctx context.Context, tx pgx.Tx, channels []alertChannelRule, ev
 		if *hourCount < int64(*c.threshold) {
 			continue
 		}
-		d, _ := json.Marshal(map[string]any{"event_id": e.ID, "release": e.Release, "environment": e.Environment, "count": *hourCount, "threshold": *c.threshold})
+		eventID := "" // with no stored event to show, the alert links to the issue
+		if linkable != nil {
+			eventID = linkable.ID
+		}
+		d, _ := json.Marshal(map[string]any{"event_id": eventID, "release": e.Release, "environment": e.Environment, "count": *hourCount, "threshold": *c.threshold})
 		if _, err := tx.Exec(ctx, `insert into notifications (channel_id, issue_id, kind, detail) values ($1, $2, 'frequency', $3)`, c.id, issueID, d); err != nil {
 			return err
 		}

@@ -69,7 +69,7 @@ func (w *Worker) Run(ctx context.Context) {
 		case err != nil:
 			w.Log.Error("processing ingest queue", "err", err)
 			wait, backoff = backoff, min(backoff*2, 30*time.Second)
-		case out.Stored+out.Duplicates+out.Failed == 0:
+		case out.Stored+out.CountedOnly+out.Duplicates+out.Failed == 0:
 			wait, backoff = w.Idle, w.Idle
 		default:
 			backoff = w.Idle
@@ -87,6 +87,7 @@ func (w *Worker) Run(ctx context.Context) {
 
 func (w *Worker) record(o store.Outcome) {
 	w.Metrics.Add("worker_events_stored", o.Stored)
+	w.Metrics.Add("worker_events_counted_only", o.CountedOnly)
 	w.Metrics.Add("worker_events_duplicate", o.Duplicates)
 	w.Metrics.Add("worker_issues_created", o.NewIssues)
 	w.Metrics.Add("worker_issues_regressed", o.Regressions)

@@ -25,6 +25,7 @@ type Config struct {
 	MaxEventBytes        int64
 	MaxQueueDepth        int
 	WorkerBatchSize      int
+	EventsPerIssueHour   int      // events stored in full per issue each hour; 0 stores all
 	RetentionDays        int      // events and issues older than this are deleted
 	SecretKey            string   // seals alert webhooks at rest
 	SlackWebhookHosts    []string // hosts alert webhooks may point at
@@ -71,6 +72,11 @@ func Load() (Config, error) {
 	c.MaxEventBytes = intEnv("WATCHTOWER_MAX_EVENT_BYTES", 1<<20, &errs)
 	c.MaxQueueDepth = int(intEnv("WATCHTOWER_MAX_QUEUE_DEPTH", 100_000, &errs))
 	c.WorkerBatchSize = int(intEnv("WATCHTOWER_WORKER_BATCH_SIZE", 100, &errs))
+	if os.Getenv("WATCHTOWER_EVENTS_PER_ISSUE_HOUR") == "0" {
+		c.EventsPerIssueHour = 0
+	} else {
+		c.EventsPerIssueHour = int(intEnv("WATCHTOWER_EVENTS_PER_ISSUE_HOUR", 100, &errs))
+	}
 	c.RetentionDays = int(intEnv("WATCHTOWER_RETENTION_DAYS", 90, &errs))
 	loadEmail(&c, &errs)
 	if c.DatabaseURL == "" {

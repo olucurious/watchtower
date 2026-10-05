@@ -100,6 +100,7 @@ func run(args []string) error {
 	}
 	defer db.Close()
 	db.MaxQueueDepth = cfg.MaxQueueDepth
+	db.StoredPerIssueHour = cfg.EventsPerIssueHour
 	// Every command brings the schema up to date first, so admin commands
 	// work on a fresh database before the server has ever started.
 	if err := db.Migrate(ctx); err != nil {

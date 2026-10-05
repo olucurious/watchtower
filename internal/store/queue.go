@@ -110,7 +110,7 @@ type GroupFunc func(ctx context.Context, q ArtifactQuerier, e *event.Event) Grou
 
 // Outcome reports what one ProcessQueue call did.
 type Outcome struct {
-	Stored, Duplicates, NewIssues, Regressions, Failed, DeadLettered int
+	Stored, CountedOnly, Duplicates, NewIssues, Regressions, Failed, DeadLettered int
 }
 
 const (
@@ -194,6 +194,7 @@ func (s *Store) ProcessQueue(ctx context.Context, limit int, group GroupFunc) (O
 
 func (o *Outcome) add(b Outcome) {
 	o.Stored += b.Stored
+	o.CountedOnly += b.CountedOnly
 	o.Duplicates += b.Duplicates
 	o.NewIssues += b.NewIssues
 	o.Regressions += b.Regressions
@@ -236,6 +237,7 @@ type prepared struct {
 	err  error  // why it could not be stored
 
 	duplicate bool // already stored (an SDK retry); set by insertEvents
+	countOnly bool // counted towards its issue but not stored; set by limitStorage
 }
 
 // prepareAll decodes and groups the claimed events. The ones that can be
@@ -303,24 +305,35 @@ func (s *Store) storeBatch(ctx context.Context, tx pgx.Tx, events []*prepared, o
 	if err := lockIssues(ctx, tx, issues); err != nil {
 		return err
 	}
-	inserted, err := insertEvents(ctx, tx, issues)
-	if err != nil {
+	if err := s.limitStorage(ctx, tx, issues); err != nil {
 		return err
 	}
-	out.Duplicates += len(events) - inserted
+	if err := insertEvents(ctx, tx, issues); err != nil {
+		return err
+	}
 
 	// One write per issue, pipelined.
 	b := &pgx.Batch{}
 	type alertCheck struct {
 		issue   *pendingIssue
-		events  []*event.Event // stored, in queue order
+		events  []*event.Event // counted, in queue order
+		stored  map[*event.Event]bool
 		trigger string
 	}
 	var alerts []alertCheck
 	for _, is := range issues {
 		var kept []*prepared
+		storedEvents := map[*event.Event]bool{}
 		for _, p := range is.events {
-			if !p.duplicate {
+			switch {
+			case p.duplicate:
+				out.Duplicates++
+			case p.countOnly:
+				out.CountedOnly++
+				kept = append(kept, p)
+			default:
+				out.Stored++
+				storedEvents[&p.e] = true
 				kept = append(kept, p)
 			}
 		}
@@ -330,7 +343,6 @@ func (s *Store) storeBatch(ctx context.Context, tx pgx.Tx, events []*prepared, o
 			}
 			continue
 		}
-		out.Stored += len(kept)
 		first, last := &kept[0].e, &kept[len(kept)-1].e
 		firstSeen, lastSeen, release := first.Timestamp, first.Timestamp, ""
 		var envs []string
@@ -376,7 +388,7 @@ func (s *Store) storeBatch(ctx context.Context, tx pgx.Tx, events []*prepared, o
 			b.Queue(`update issues set status = 'unresolved', regressed_at = now() where id = $1`, is.id)
 			b.Queue(`insert into issue_activity (issue_id, kind, detail) values ($1, 'regressed', $2)`, is.id, detail)
 		}
-		alerts = append(alerts, alertCheck{is, stored, trigger})
+		alerts = append(alerts, alertCheck{is, stored, storedEvents, trigger})
 	}
 	if err := tx.SendBatch(ctx, b).Close(); err != nil {
 		return err
@@ -392,6 +404,7 @@ func (s *Store) storeBatch(ctx context.Context, tx pgx.Tx, events []*prepared, o
 		project := a.events[0].ProjectID
 		rules, ok := channels[project]
 		if !ok {
+			var err error
 			if rules, err = alertRules(ctx, tx, project); err != nil {
 				return fmt.Errorf("queueing alerts: %w", err)
 			}
@@ -401,7 +414,7 @@ func (s *Store) storeBatch(ctx context.Context, tx pgx.Tx, events []*prepared, o
 		if a.issue.created {
 			status = "new"
 		}
-		if err := queueAlerts(ctx, tx, rules, a.events, a.issue.id, status, a.trigger); err != nil {
+		if err := queueAlerts(ctx, tx, rules, a.events, a.stored, a.issue.id, status, a.trigger); err != nil {
 			return fmt.Errorf("queueing alerts: %w", err)
 		}
 	}
@@ -441,49 +454,101 @@ func lockIssues(ctx context.Context, tx pgx.Tx, issues []*pendingIssue) error {
 	return br.Close()
 }
 
-// insertEvents writes the batch's events in one statement and returns how
-// many were new. Events already stored (an SDK retry) are marked as
-// duplicates so they don't count towards their issue.
-func insertEvents(ctx context.Context, tx pgx.Tx, issues []*pendingIssue) (int, error) {
+// sampleEvery keeps one in this many events past an issue's hourly
+// storage limit, so later events (a new release, say) still have examples.
+const sampleEvery = 1000
+
+// limitStorage decides which events are stored in full. Each issue stores
+// its first StoredPerIssueHour events of every hour, then one in
+// sampleEvery; the rest are only counted, so an error storm costs counts,
+// not storage. An issue's first event and the event that reopens it are
+// always stored, since alerts and emails link to them. Issues are locked,
+// so the hourly counts read here are current.
+func (s *Store) limitStorage(ctx context.Context, tx pgx.Tx, issues []*pendingIssue) error {
+	if s.StoredPerIssueHour <= 0 {
+		return nil
+	}
+	type bucket struct {
+		issue int64
+		hour  time.Time
+	}
+	var ids []int64
+	var hours []time.Time
+	for _, is := range issues {
+		ids = append(ids, is.id)
+		for _, p := range is.events {
+			hours = append(hours, p.e.Timestamp.UTC().Truncate(time.Hour))
+		}
+	}
+	rows, err := tx.Query(ctx, `select issue_id, hour, events from issue_hourly where issue_id = any($1) and hour = any($2)`, ids, hours)
+	if err != nil {
+		return err
+	}
+	seen := map[bucket]int64{}
+	var k bucket
+	var n int64
+	if _, err := pgx.ForEachRow(rows, []any{&k.issue, &k.hour, &n}, func() error { seen[bucket{k.issue, k.hour.UTC()}] = n; return nil }); err != nil {
+		return err
+	}
+	for _, is := range issues {
+		for i, p := range is.events {
+			k := bucket{is.id, p.e.Timestamp.UTC().Truncate(time.Hour)}
+			n := seen[k]
+			seen[k]++
+			changesState := i == 0 && (is.created || is.status == "resolved")
+			p.countOnly = !changesState && n >= int64(s.StoredPerIssueHour) && n%sampleEvery != 0
+		}
+	}
+	return nil
+}
+
+// insertEvents writes the batch's stored events in one statement. Events
+// already stored (an SDK retry), and repeats within the batch, are marked
+// as duplicates so they don't count towards their issue. Events that are
+// only counted have no row to check, so only repeats within the batch are
+// caught for them.
+func insertEvents(ctx context.Context, tx pgx.Tx, issues []*pendingIssue) error {
 	var projects, issueIDs []int64
 	var ids, data []string
 	var occurred, received []time.Time
 	for _, is := range issues {
 		for _, p := range is.events {
+			if p.countOnly {
+				continue
+			}
 			projects, issueIDs = append(projects, p.e.ProjectID), append(issueIDs, is.id)
 			ids, data = append(ids, p.e.ID), append(data, string(p.data))
 			occurred, received = append(occurred, p.e.Timestamp), append(received, p.e.ReceivedAt)
 		}
-	}
-	rows, err := tx.Query(ctx, `
-		insert into events (project_id, event_id, issue_id, occurred_at, received_at, data)
-		select * from unnest($1::bigint[], $2::text[], $3::bigint[], $4::timestamptz[], $5::timestamptz[], $6::text[]::jsonb[])
-		on conflict do nothing returning project_id, event_id`,
-		projects, ids, issueIDs, occurred, received, data)
-	if err != nil {
-		return 0, err
 	}
 	type key struct {
 		project int64
 		id      string
 	}
 	inserted := map[key]bool{}
-	var k key
-	if _, err := pgx.ForEachRow(rows, []any{&k.project, &k.id}, func() error { inserted[k] = true; return nil }); err != nil {
-		return 0, err
+	if len(ids) > 0 {
+		rows, err := tx.Query(ctx, `
+			insert into events (project_id, event_id, issue_id, occurred_at, received_at, data)
+			select * from unnest($1::bigint[], $2::text[], $3::bigint[], $4::timestamptz[], $5::timestamptz[], $6::text[]::jsonb[])
+			on conflict do nothing returning project_id, event_id`,
+			projects, ids, issueIDs, occurred, received, data)
+		if err != nil {
+			return err
+		}
+		var k key
+		if _, err := pgx.ForEachRow(rows, []any{&k.project, &k.id}, func() error { inserted[k] = true; return nil }); err != nil {
+			return err
+		}
 	}
-	stored := 0
+	seen := map[key]bool{}
 	for _, is := range issues {
 		for _, p := range is.events {
 			k := key{p.e.ProjectID, p.e.ID}
-			p.duplicate = !inserted[k]
-			if !p.duplicate {
-				delete(inserted, k) // a repeat within the batch is a duplicate too
-				stored++
-			}
+			p.duplicate = seen[k] || (!p.countOnly && !inserted[k])
+			seen[k] = true
 		}
 	}
-	return stored, nil
+	return nil
 }
 
 func minTime(a, b time.Time) time.Time {

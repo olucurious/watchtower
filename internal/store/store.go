@@ -29,6 +29,11 @@ type Store struct {
 	// MaxQueueDepth makes Accept shed load once this many events are waiting.
 	MaxQueueDepth int
 
+	// StoredPerIssueHour limits how many of an issue's events are stored in
+	// full each hour; past it, events are counted and only a sample is
+	// stored. Zero stores every event.
+	StoredPerIssueHour int
+
 	// EmailEnabled queues personal emails; without a mail server nothing
 	// is written, so no backlog builds up.
 	EmailEnabled bool
@@ -58,7 +63,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 		pool.Close()
 		return nil, fmt.Errorf("connecting to postgres: %w", err)
 	}
-	return &Store{pool: pool, MaxQueueDepth: 100_000, depth: depthGauge{ttl: time.Second}}, nil
+	return &Store{pool: pool, MaxQueueDepth: 100_000, StoredPerIssueHour: 100, depth: depthGauge{ttl: time.Second}}, nil
 }
 
 func (s *Store) Close()                         { s.pool.Close() }
