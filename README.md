@@ -64,7 +64,7 @@ It runs as a single Go binary with Postgres as its only dependency.
 - **Grouping you can trust.** Errors group by their cause, with versioned
   rules that stay stable across builds, minified code and recursion.
   Resolved issues that happen again reopen as regressions.
-- **Calm during error storms.** Every event is counted, but past 100 events of
+- **Calm during error storms.** Every event is counted, but past 20 events of
   an issue in an hour only a sample is stored, so a crash loop costs counts,
   not disk.
 - **Triage together.** Owners, comments, an activity timeline, bulk actions,
@@ -356,7 +356,7 @@ Watchtower reads `WATCHTOWER_*` environment variables.
 | `WATCHTOWER_LISTEN` | `:8080` | HTTP listen address |
 | `WATCHTOWER_ADAPTERS` | `sentry,appsignal,appsignal-frontend` | Enabled adapters |
 | `WATCHTOWER_ROLES` | `ingest,worker` | Serve ingestion, run the background workers, or both |
-| `WATCHTOWER_EVENTS_PER_ISSUE_HOUR` | 100 | Events of one issue stored in full each hour; after that, every event is counted but only one in 1,000 is stored. `0` stores every event |
+| `WATCHTOWER_EVENTS_PER_ISSUE_HOUR` | 20 | Events of one issue stored in full each hour; after that, every event is counted but only one in 1,000 is stored. `0` stores every event |
 | `WATCHTOWER_RETENTION_DAYS` | 90 | Older events, issues with no recent occurrences, source maps and alert and email history are deleted hourly |
 | `WATCHTOWER_MAX_BODY_BYTES` | 20 MiB | Request size on the wire |
 | `WATCHTOWER_MAX_DECOMPRESSED_BYTES` | 50 MiB | Request size after decompression |

@@ -75,7 +75,7 @@ func Load() (Config, error) {
 	if os.Getenv("WATCHTOWER_EVENTS_PER_ISSUE_HOUR") == "0" {
 		c.EventsPerIssueHour = 0
 	} else {
-		c.EventsPerIssueHour = int(intEnv("WATCHTOWER_EVENTS_PER_ISSUE_HOUR", 100, &errs))
+		c.EventsPerIssueHour = int(intEnv("WATCHTOWER_EVENTS_PER_ISSUE_HOUR", 20, &errs))
 	}
 	c.RetentionDays = int(intEnv("WATCHTOWER_RETENTION_DAYS", 90, &errs))
 	loadEmail(&c, &errs)

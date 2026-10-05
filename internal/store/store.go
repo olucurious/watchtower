@@ -63,7 +63,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 		pool.Close()
 		return nil, fmt.Errorf("connecting to postgres: %w", err)
 	}
-	return &Store{pool: pool, MaxQueueDepth: 100_000, StoredPerIssueHour: 100, depth: depthGauge{ttl: time.Second}}, nil
+	return &Store{pool: pool, MaxQueueDepth: 100_000, StoredPerIssueHour: 20, depth: depthGauge{ttl: time.Second}}, nil
 }
 
 func (s *Store) Close()                         { s.pool.Close() }

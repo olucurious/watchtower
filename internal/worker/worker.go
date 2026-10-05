@@ -69,7 +69,7 @@ func (w *Worker) Run(ctx context.Context) {
 		case err != nil:
 			w.Log.Error("processing ingest queue", "err", err)
 			wait, backoff = backoff, min(backoff*2, 30*time.Second)
-		case out.Stored+out.CountedOnly+out.Duplicates+out.Failed == 0:
+		case out.Processed() == 0:
 			wait, backoff = w.Idle, w.Idle
 		default:
 			backoff = w.Idle

@@ -144,7 +144,7 @@ func TestConcurrentWorkersDoNotDeadlock(t *testing.T) {
 					errs <- err
 					return
 				}
-				if out.Stored+out.Duplicates+out.Failed == 0 {
+				if out.Processed() == 0 {
 					return
 				}
 			}
@@ -252,7 +252,7 @@ func TestSpikeProtectionStoresASampleAndCountsAll(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if o.Stored+o.CountedOnly+o.Duplicates == 0 {
+		if o.Processed() == 0 {
 			break
 		}
 		out.add(o)

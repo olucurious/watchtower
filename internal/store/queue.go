@@ -113,6 +113,10 @@ type Outcome struct {
 	Stored, CountedOnly, Duplicates, NewIssues, Regressions, Failed, DeadLettered int
 }
 
+// Processed is how many claimed events the call handled; zero means the
+// queue had nothing ready.
+func (o Outcome) Processed() int { return o.Stored + o.CountedOnly + o.Duplicates + o.Failed }
+
 const (
 	maxAttempts  = 5
 	retryBackoff = 30 * time.Second
