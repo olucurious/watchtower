@@ -4,10 +4,11 @@ package symbolicate
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/url"
 	"path"
 	"strings"
-	"sync"
 
 	"github.com/go-sourcemap/sourcemap"
 
@@ -18,16 +19,14 @@ import (
 const (
 	contextLines   = 5
 	maxContextLine = 300 // characters; minified one-liners are not useful context
-	cacheSize      = 128
 )
 
 // Symbolicator applies source maps, caching parsed maps by file ID.
 type Symbolicator struct {
-	mu    sync.Mutex
-	cache map[int64]*sourcemap.Consumer
+	cache *mapCache
 }
 
-func New() *Symbolicator { return &Symbolicator{cache: map[int64]*sourcemap.Consumer{}} }
+func New() *Symbolicator { return &Symbolicator{cache: newMapCache(cacheBudget)} }
 
 type mapped struct {
 	ok           bool
@@ -84,17 +83,16 @@ func (s *Symbolicator) lookup(ctx context.Context, q store.ArtifactQuerier, e *e
 	}
 	loc := firstNonEmpty(f.AbsPath, f.Filename)
 	var (
-		id      int64
-		content []byte
-		ok      bool
-		err     error
+		id  int64
+		ok  bool
+		err error
 	)
 	if debugID := debugIDFor(e, loc); debugID != "" {
-		id, content, ok, err = store.SourceMapByDebugID(ctx, q, e.ProjectID, debugID)
+		id, ok, err = store.SourceMapIDByDebugID(ctx, q, e.ProjectID, debugID)
 	}
 	if !ok && err == nil && e.Release != "" {
 		for _, u := range releaseURLs(loc) {
-			if id, content, ok, err = store.SourceMapByURL(ctx, q, e.ProjectID, e.Release, "", u); ok || err != nil {
+			if id, ok, err = store.SourceMapIDByURL(ctx, q, e.ProjectID, e.Release, "", u); ok || err != nil {
 				break
 			}
 		}
@@ -102,9 +100,12 @@ func (s *Symbolicator) lookup(ctx context.Context, q store.ArtifactQuerier, e *e
 	if !ok || err != nil {
 		return mapped{}, err
 	}
-	c, err := s.consumer(id, content)
+	c, err := s.consumer(ctx, q, id)
+	if errors.Is(err, errBadMap) {
+		return mapped{}, nil // a broken map leaves the frame minified, not the event failed
+	}
 	if err != nil {
-		return mapped{}, nil //nolint:nilerr // a broken map leaves the frame minified, not the event failed
+		return mapped{}, err
 	}
 	src, name, line, col, found := c.Source(f.Lineno, f.Colno-1)
 	if !found {
@@ -113,25 +114,24 @@ func (s *Symbolicator) lookup(ctx context.Context, q store.ArtifactQuerier, e *e
 	return mapped{ok: true, source: src, name: name, line: line, col: col, consumer: c}, nil
 }
 
-func (s *Symbolicator) consumer(id int64, content []byte) (*sourcemap.Consumer, error) {
-	s.mu.Lock()
-	c, ok := s.cache[id]
-	s.mu.Unlock()
-	if ok {
+var errBadMap = errors.New("unreadable source map")
+
+// consumer returns the parsed map, loading it only when it isn't cached.
+func (s *Symbolicator) consumer(ctx context.Context, q store.ArtifactQuerier, id int64) (*sourcemap.Consumer, error) {
+	if c, ok := s.cache.get(id); ok {
 		return c, nil
+	}
+	content, err := store.SourceMapContent(ctx, q, id)
+	if err != nil {
+		return nil, err
 	}
 	// No base URL: sources keep the map's own paths, and a cached map does
 	// not depend on which frame loaded it first.
 	c, err := sourcemap.Parse("", content)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", errBadMap, err)
 	}
-	s.mu.Lock()
-	if len(s.cache) >= cacheSize {
-		s.cache = map[int64]*sourcemap.Consumer{}
-	}
-	s.cache[id] = c
-	s.mu.Unlock()
+	s.cache.put(id, c, len(content))
 	return c, nil
 }
 

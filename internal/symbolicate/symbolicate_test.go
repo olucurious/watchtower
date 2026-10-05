@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-sourcemap/sourcemap"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/olucurious/watchtower/internal/adapter/sentry"
@@ -17,12 +18,13 @@ import (
 	"github.com/olucurious/watchtower/internal/sourcemaps"
 )
 
-// fakeArtifacts answers every source map lookup with one map, and records
-// the debug IDs it was asked for.
+// fakeArtifacts answers source map lookups with one map, and records the
+// debug IDs it was asked for and how often the map's content was loaded.
 type fakeArtifacts struct {
 	gz     []byte
 	asked  []any
 	misses bool
+	loads  int
 }
 
 type row struct {
@@ -34,12 +36,20 @@ func (r row) Scan(dest ...any) error {
 	if r.err != nil {
 		return r.err
 	}
-	*dest[0].(*int64) = 7
-	*dest[1].(*[]byte) = r.f.gz
+	switch d := dest[0].(type) {
+	case *int64: // looking up the map's ID
+		*d = 7
+	case *[]byte: // loading its content
+		r.f.loads++
+		*d = r.f.gz
+	}
 	return nil
 }
 
 func (f *fakeArtifacts) QueryRow(_ context.Context, _ string, args ...any) pgx.Row {
+	if len(args) == 1 { // content by ID
+		return row{f: f}
+	}
 	f.asked = append(f.asked, args[1])
 	// Like the real store: only the uploaded debug ID has a map.
 	if f.misses || args[1] != "c15ec507-acfd-5e0f-8e7d-28eddc80f480" {
@@ -166,5 +176,47 @@ func TestReleaseURLs(t *testing.T) {
 	}
 	if got := releaseURLs("/app/dist/main.mjs"); got[0] != "~/app/dist/main.mjs" || got[1] != "~/main.mjs" {
 		t.Errorf("file path: %v", got)
+	}
+}
+
+// A cached map is never loaded from the store again: only its ID is looked
+// up for each frame.
+func TestCachedMapIsLoadedOnce(t *testing.T) {
+	art, e := fixtures(t)
+	s := New()
+	for range 5 {
+		ev := e
+		ev.Exceptions = []event.Exception{e.Exceptions[0]}
+		ev.Exceptions[0].Frames = append([]event.Frame(nil), e.Exceptions[0].Frames...)
+		if n, err := s.Event(context.Background(), art, &ev); err != nil || n == 0 {
+			t.Fatalf("mapped %d frames: %v", n, err)
+		}
+	}
+	if art.loads != 1 {
+		t.Fatalf("map content loaded %d times for 5 events, want 1", art.loads)
+	}
+}
+
+func TestMapCacheStaysWithinBudget(t *testing.T) {
+	c := newMapCache(100)
+	m := &sourcemap.Consumer{}
+	c.put(1, m, 40)
+	c.put(2, m, 40)
+	c.get(1) // 1 is now more recent than 2
+	c.put(3, m, 40)
+	if _, ok := c.get(2); ok {
+		t.Error("the least recently used map should have been evicted")
+	}
+	for _, id := range []int64{1, 3} {
+		if _, ok := c.get(id); !ok {
+			t.Errorf("map %d evicted too early", id)
+		}
+	}
+	if c.used > c.budget {
+		t.Errorf("used %d of a %d budget", c.used, c.budget)
+	}
+	c.put(4, m, 101)
+	if _, ok := c.get(4); ok || c.used != 80 {
+		t.Errorf("a map over the budget must not be cached (used %d)", c.used)
 	}
 }

@@ -5,12 +5,26 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 )
 
 // MaxCommentLength bounds a comment; comments are short triage notes.
 const MaxCommentLength = 2000
+
+// ErrInvalidComment: a comment is empty, too long or not plain text.
+var ErrInvalidComment = fmt.Errorf("a comment must be 1 to %d characters of plain text", MaxCommentLength)
+
+// CleanComment trims a comment and checks it is one that can be stored.
+func CleanComment(body string) (string, error) {
+	body = strings.TrimSpace(body)
+	if body == "" || utf8.RuneCountInString(body) > MaxCommentLength || !utf8.ValidString(body) || strings.ContainsRune(body, 0) {
+		return "", ErrInvalidComment
+	}
+	return body, nil
+}
 
 // SetProjectRepo sets the repository URL used to link releases to commits.
 func (s *Store) SetProjectRepo(ctx context.Context, slug, repoURL string) error {

@@ -26,7 +26,7 @@ const (
 	maxRequestSize  = 32 << 20
 	chunksPerReq    = 64
 	maxBundleSize   = 256 << 20
-	maxFileInBundle = 100 << 20
+	maxFileInBundle = store.MaxArtifactBytes
 	maxBundleFiles  = 10_000
 )
 

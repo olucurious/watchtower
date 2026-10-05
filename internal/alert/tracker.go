@@ -237,13 +237,24 @@ func (t *Tracker) Sync(ctx context.Context) (resolved int, err error) {
 	if err != nil {
 		return 0, err
 	}
+	// Links are checked oldest first, so every link examined is marked as
+	// checked, even when it can't be: otherwise deleted Linear issues or a
+	// revoked key would stay at the front and starve all the others.
 	byKey := map[string][]store.LinkToCheck{}
+	var unreadable []store.LinkToCheck
 	for _, l := range links {
 		key, err := t.Sealer.Open(l.Sealed)
 		if err != nil {
+			unreadable = append(unreadable, l)
 			continue
 		}
 		byKey[key] = append(byKey[key], l)
+	}
+	if len(unreadable) > 0 {
+		t.Log.Warn("cannot read the Linear key of some linked issues; was WATCHTOWER_SECRET_KEY changed?", "links", len(unreadable))
+		if err := t.markChecked(ctx, unreadable); err != nil {
+			return resolved, err
+		}
 	}
 	var firstErr error
 	for key, ls := range byKey {
@@ -260,14 +271,21 @@ func (t *Tracker) Sync(ctx context.Context) (resolved int, err error) {
 					return resolved, ctx.Err()
 				}
 				firstErr = cmp.Or(firstErr, err)
-				break batches
+				var limited *RateLimited
+				if errors.As(err, &limited) {
+					break batches // retried first next time
+				}
+				if err := t.markChecked(ctx, batch); err != nil {
+					return resolved, err
+				}
+				continue
 			}
 			for _, l := range batch {
 				state, ok := states[l.ExternalID]
 				if !ok {
-					continue // deleted, or no longer visible to this key
+					state = l.State // deleted, or no longer visible to this key
 				}
-				done, err := t.Store.LinkChecked(ctx, l.IssueID, "linear", state, state == "completed")
+				done, err := t.Store.LinkChecked(ctx, l.IssueID, "linear", state, ok && state == "completed")
 				if err != nil {
 					return resolved, err
 				}
@@ -278,6 +296,17 @@ func (t *Tracker) Sync(ctx context.Context) (resolved int, err error) {
 		}
 	}
 	return resolved, firstErr
+}
+
+// markChecked records links as checked without changing their state, so
+// links that can't be checked move to the back of the queue.
+func (t *Tracker) markChecked(ctx context.Context, links []store.LinkToCheck) error {
+	for _, l := range links {
+		if _, err := t.Store.LinkChecked(ctx, l.IssueID, "linear", l.State, false); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // RunSync calls Sync every interval until ctx ends.

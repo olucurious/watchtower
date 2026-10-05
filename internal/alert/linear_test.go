@@ -129,6 +129,7 @@ type memTracker struct {
 	links    map[int64]*store.IssueLink
 	activity []string
 	resolved map[int64]bool
+	checked  map[int64]int
 	event    event.Event
 }
 
@@ -160,6 +161,9 @@ func (m *memTracker) LinksToCheck(context.Context, string, int) ([]store.LinkToC
 	return out, nil
 }
 func (m *memTracker) LinkChecked(_ context.Context, id int64, _, state string, done bool) (bool, error) {
+	if m.checked != nil {
+		m.checked[id]++
+	}
 	m.links[id].State = state
 	if done && !m.resolved[id] {
 		m.resolved[id] = true
@@ -294,5 +298,41 @@ func TestTrackerRefusesNonHTTPSLinks(t *testing.T) {
 	f.badURL = true
 	if _, _, err := tr.Link(ctx, LinearChannel{ID: 1, Sealed: sealedKey, TeamID: "team-1"}, &store.IssueRow{ID: 9, Title: "x"}, "Web", "Ada", 1); err == nil || mem.links[9] != nil {
 		t.Errorf("javascript: URL accepted: %v", err)
+	}
+}
+
+// Every link a sync examines is marked as checked, including ones it
+// cannot check, so they move to the back of the oldest-first queue instead
+// of starving the rest.
+func TestSyncMarksUncheckableLinksChecked(t *testing.T) {
+	ctx := context.Background()
+	f, l := newFakeLinear(t)
+	sealer, _ := NewSealer(strings.Repeat("ab", 32))
+	sealedKey, _ = sealer.Seal(linearKey)
+	revoked, _ := sealer.Seal("lin_api_revokedrevokedrevoked")
+	mem := &memTracker{links: map[int64]*store.IssueLink{}, resolved: map[int64]bool{}, sealed: map[int64][]byte{}, checked: map[int64]int{}}
+	tr := &Tracker{Store: mem, Linear: l, Sealer: sealer, PublicURL: "https://w.example", Log: slog.New(slog.DiscardHandler)}
+	live, _, err := tr.Link(ctx, LinearChannel{ID: 1, Sealed: sealedKey, TeamID: "team-1"}, &store.IssueRow{ID: 1, Title: "Error: live"}, "Web", "Ada", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem.links[2] = &store.IssueLink{IssueID: 2, Provider: "linear", ExternalID: "deleted-in-linear", State: "started"}
+	mem.links[3] = &store.IssueLink{IssueID: 3, Provider: "linear", ExternalID: "x", State: "started"}
+	mem.sealed[3] = []byte("not sealed with this key")
+	mem.links[4] = &store.IssueLink{IssueID: 4, Provider: "linear", ExternalID: "y", State: "started"}
+	mem.sealed[4] = revoked
+	f.issues[live.ExternalID].State.Type = "completed"
+
+	n, _ := tr.Sync(ctx)
+	if n != 1 || !mem.resolved[1] {
+		t.Fatalf("resolved %d, want the live link resolved", n)
+	}
+	for id, why := range map[int64]string{2: "deleted in Linear", 3: "unreadable key", 4: "rejected key"} {
+		if mem.checked[id] == 0 {
+			t.Errorf("link %d (%s) was not marked checked", id, why)
+		}
+		if mem.links[id].State != "started" || mem.resolved[id] {
+			t.Errorf("link %d (%s) changed: %+v", id, why, mem.links[id])
+		}
 	}
 }

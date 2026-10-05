@@ -335,9 +335,9 @@ func (s *Server) comment(ctx context.Context, req *mcp.CallToolRequest, in comme
 	if !write {
 		return nil, nil, errReadOnly
 	}
-	body := strings.TrimSpace(in.Body)
-	if body == "" || len([]rune(body)) > store.MaxCommentLength || strings.ContainsRune(body, 0) {
-		return nil, nil, fmt.Errorf("a comment must be 1 to %d characters", store.MaxCommentLength)
+	body, err := store.CleanComment(in.Body)
+	if err != nil {
+		return nil, nil, err
 	}
 	d, err := s.loadIssue(ctx, in.Issue)
 	if err != nil {

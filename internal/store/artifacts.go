@@ -118,11 +118,21 @@ func (s *Store) MissingChunks(ctx context.Context, checksums []string) ([]string
 
 // ChunkData concatenates chunks in order.
 func (s *Store) ChunkData(ctx context.Context, checksums []string) ([]byte, error) {
+	rows, err := s.pool.Query(ctx, `select checksum, data from upload_chunks where checksum = any($1)`, checksums)
+	if err != nil {
+		return nil, err
+	}
+	byChecksum := map[string][]byte{}
+	var c string
+	var data []byte
+	if _, err := pgx.ForEachRow(rows, []any{&c, &data}, func() error { byChecksum[c] = data; return nil }); err != nil {
+		return nil, err
+	}
 	var buf bytes.Buffer
-	for _, c := range checksums {
-		var data []byte
-		if err := s.pool.QueryRow(ctx, `select data from upload_chunks where checksum = $1`, c).Scan(&data); err != nil {
-			return nil, fmt.Errorf("chunk %s: %w", c, err)
+	for _, c := range checksums { // in upload order; a chunk may repeat
+		data, ok := byChecksum[c]
+		if !ok {
+			return nil, fmt.Errorf("chunk %s: %w", c, pgx.ErrNoRows)
 		}
 		buf.Write(data)
 	}
@@ -181,16 +191,17 @@ func (s *Store) SaveBundle(ctx context.Context, projectIDs []int64, b Bundle, fi
 			if err != nil {
 				return err
 			}
+			var rows [][]any
 			for i, f := range files {
 				if !artifactKinds[f.Kind] {
 					continue // e.g. indexed RAM bundles; not supported
 				}
-				if _, err := tx.Exec(ctx, `
-					insert into artifact_files (bundle_id, project_id, kind, url, debug_id, sourcemap_ref, content_gzip)
-					values ($1, $2, $3, $4, $5, $6, $7)`,
-					bundleID, pid, f.Kind, f.URL, f.DebugID, f.SourcemapRef, compressed[i]); err != nil {
-					return err
-				}
+				rows = append(rows, []any{bundleID, pid, f.Kind, f.URL, f.DebugID, f.SourcemapRef, compressed[i]})
+			}
+			if _, err := tx.CopyFrom(ctx, pgx.Identifier{"artifact_files"},
+				[]string{"bundle_id", "project_id", "kind", "url", "debug_id", "sourcemap_ref", "content_gzip"},
+				pgx.CopyFromRows(rows)); err != nil {
+				return err
 			}
 		}
 		_, err := tx.Exec(ctx, `delete from upload_chunks where checksum = any($1)`, chunks)
@@ -240,43 +251,60 @@ type ArtifactQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// SourceMapByDebugID returns the newest source map uploaded for a debug
-// ID, with its file ID for caching. ok is false when none exists.
-func SourceMapByDebugID(ctx context.Context, q ArtifactQuerier, projectID int64, debugID string) (id int64, content []byte, ok bool, err error) {
-	return loadArtifact(ctx, q, `
-		select id, content_gzip from artifact_files
+// MaxArtifactBytes bounds one uploaded file after decompression. Uploads
+// larger than this are refused, and reads stop at it.
+const MaxArtifactBytes = 100 << 20
+
+// SourceMapIDByDebugID returns the newest source map uploaded for a debug
+// ID. Only the ID is read, so callers can check a cache before loading the
+// content with SourceMapContent.
+func SourceMapIDByDebugID(ctx context.Context, q ArtifactQuerier, projectID int64, debugID string) (int64, bool, error) {
+	return findArtifact(ctx, q, `
+		select id from artifact_files
 		where project_id = $1 and debug_id = $2 and kind = 'source_map' order by id desc limit 1`, projectID, debugID)
 }
 
-// SourceMapByURL finds the map for a minified file uploaded under a
-// release, following its sourcemap reference. url is the "~/path" form.
-func SourceMapByURL(ctx context.Context, q ArtifactQuerier, projectID int64, release, dist, url string) (int64, []byte, bool, error) {
-	return loadArtifact(ctx, q, `
+// SourceMapIDByURL finds the map for a minified file uploaded under a
+// release, following its sourceMappingURL.
+func SourceMapIDByURL(ctx context.Context, q ArtifactQuerier, projectID int64, release, dist, url string) (int64, bool, error) {
+	return findArtifact(ctx, q, `
 		with minified as (
 			select f.sourcemap_ref, f.url, f.bundle_id from artifact_files f join artifact_bundles b on b.id = f.bundle_id
 			where f.project_id = $1 and f.kind = 'minified_source' and f.url = $4 and b.release = $2 and b.dist = $3
 			order by f.id desc limit 1
 		)
-		select f.id, f.content_gzip from artifact_files f, minified m
+		select f.id from artifact_files f, minified m
 		where f.bundle_id = m.bundle_id and f.kind = 'source_map'
 			and (f.url = m.sourcemap_ref or f.url = regexp_replace(m.url, '[^/]*$', '') || m.sourcemap_ref or f.url = m.url || '.map')
 		order by f.id desc limit 1`, projectID, release, dist, url)
 }
 
-func loadArtifact(ctx context.Context, q ArtifactQuerier, sql string, args ...any) (int64, []byte, bool, error) {
+func findArtifact(ctx context.Context, q ArtifactQuerier, sql string, args ...any) (int64, bool, error) {
 	var id int64
-	var gz []byte
-	err := q.QueryRow(ctx, sql, args...).Scan(&id, &gz)
+	err := q.QueryRow(ctx, sql, args...).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, nil, false, nil
+		return 0, false, nil
 	}
-	if err != nil {
-		return 0, nil, false, err
+	return id, err == nil, err
+}
+
+// SourceMapContent loads and decompresses a stored file, up to
+// MaxArtifactBytes.
+func SourceMapContent(ctx context.Context, q ArtifactQuerier, id int64) ([]byte, error) {
+	var gz []byte
+	if err := q.QueryRow(ctx, `select content_gzip from artifact_files where id = $1`, id).Scan(&gz); err != nil {
+		return nil, err
 	}
 	zr, err := gzip.NewReader(bytes.NewReader(gz))
 	if err != nil {
-		return 0, nil, false, err
+		return nil, err
 	}
-	content, err := io.ReadAll(zr)
-	return id, content, err == nil, err
+	content, err := io.ReadAll(io.LimitReader(zr, MaxArtifactBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(content) > MaxArtifactBytes {
+		return nil, fmt.Errorf("artifact %d decompresses to more than %d bytes", id, MaxArtifactBytes)
+	}
+	return content, nil
 }

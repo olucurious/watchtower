@@ -72,7 +72,13 @@ func CheckPassword(hash, password string) (bool, error) {
 
 // dummyHash is checked when a login names an unknown user, so response
 // time does not reveal which emails have accounts.
-var dummyHash, _ = HashPassword("watchtower-timing-equalizer")
+var dummyHash = func() string {
+	h, err := HashPassword("watchtower-timing-equalizer")
+	if err != nil {
+		panic("auth: hashing the timing dummy: " + err.Error())
+	}
+	return h
+}()
 
 // CheckDummy spends the same time as a real password check.
 func CheckDummy(password string) { _, _ = CheckPassword(dummyHash, password) }

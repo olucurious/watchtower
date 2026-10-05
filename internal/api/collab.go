@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/olucurious/watchtower/internal/store"
 )
@@ -97,9 +96,9 @@ func (a *API) addComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "expected body")
 		return
 	}
-	body := strings.TrimSpace(req.Body)
-	if body == "" || utf8.RuneCountInString(body) > store.MaxCommentLength || !utf8.ValidString(body) || strings.ContainsRune(body, 0) {
-		writeError(w, http.StatusBadRequest, "comment must be 1 to 2000 characters")
+	body, err := store.CleanComment(req.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	u := currentUser(r.Context())
