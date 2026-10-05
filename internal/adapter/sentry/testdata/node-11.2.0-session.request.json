@@ -1,0 +1,14 @@
+{
+  "method": "POST",
+  "path": "/api/42/envelope/",
+  "query_keys": [
+    "sentry_client",
+    "sentry_key",
+    "sentry_version"
+  ],
+  "headers": {
+    "user-agent": "sentry.javascript.node/11.2.0",
+    "transfer-encoding": "chunked"
+  },
+  "auth_header_present": false
+}

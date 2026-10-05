@@ -1,0 +1,38 @@
+# Watchtower with Postgres on one host. The installer (install.sh) sets this
+# up; to do it by hand, put WATCHTOWER_DB_PASSWORD and WATCHTOWER_SECRET_KEY
+# in an .env file next to this one (never commit it). See README.md for every
+# other setting. To build from a checkout instead of pulling the published
+# image, add compose.build.yaml (see that file).
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: watchtower
+      POSTGRES_DB: watchtower
+      POSTGRES_PASSWORD: ${WATCHTOWER_DB_PASSWORD:?set WATCHTOWER_DB_PASSWORD}
+    volumes:
+      - postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "watchtower"]
+      interval: 5s
+      retries: 10
+
+  watchtower:
+    image: ghcr.io/olucurious/watchtower:${WATCHTOWER_VERSION:-latest}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      WATCHTOWER_DATABASE_URL: postgres://watchtower:${WATCHTOWER_DB_PASSWORD}@postgres:5432/watchtower?sslmode=disable
+      WATCHTOWER_PUBLIC_URL: ${WATCHTOWER_PUBLIC_URL:-http://localhost:8080}
+      WATCHTOWER_ADAPTERS: ${WATCHTOWER_ADAPTERS:-sentry,appsignal,appsignal-frontend}
+      # Encrypts Slack, Linear and other destination credentials at rest.
+      WATCHTOWER_SECRET_KEY: ${WATCHTOWER_SECRET_KEY:-}
+      WATCHTOWER_RETENTION_DAYS: ${WATCHTOWER_RETENTION_DAYS:-90}
+    ports:
+      - "${WATCHTOWER_PORT:-8080}:8080"
+
+volumes:
+  postgres:

@@ -1,0 +1,38 @@
+# Weekly: capture any appsignal-elixir release newer than the fixtures and
+# check the adapter decodes it. A failure means "don't upgrade services to
+# that version yet"; a pass opens a PR with the new fixtures.
+name: AppSignal versions
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Capture and test new releases
+        run: scripts/appsignal-check.sh
+      - name: Open a pull request with new fixtures
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git add internal/adapter/appsignal/testdata/matrix
+          if git diff --cached --quiet; then exit 0; fi
+          branch="appsignal-fixtures-$(date +%Y%m%d)"
+          git -c user.name="watchtower-ci" -c user.email="ci@users.noreply.github.com" \
+            commit -m "Add AppSignal fixtures for new releases"
+          git push origin "HEAD:$branch"
+          gh pr create --head "$branch" --title "AppSignal: fixtures for new releases" \
+            --body "scripts/appsignal-check.sh captured new appsignal-elixir releases and they decode correctly."

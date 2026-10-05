@@ -1,0 +1,85 @@
+# Lint, test against Postgres, scan dependencies and build the image on
+# every push and pull request.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.14.0
+      - name: Check the installer
+        run: shellcheck -s sh install.sh
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Type-check and lint the web UI
+        working-directory: web
+        run: |
+          npm ci
+          npx tsc -b
+          npm run lint
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: watchtower
+          POSTGRES_PASSWORD: watchtower
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U watchtower"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Test, including the Postgres-backed tests, with the race detector
+        env:
+          WATCHTOWER_TEST_DATABASE_URL: postgres://watchtower:watchtower@localhost:5432/postgres?sslmode=disable
+        run: go test -race -count=1 ./...
+
+  vulnerabilities:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: golang/govulncheck-action@v1
+        with:
+          go-version-input: ""  # use go.mod's toolchain, not the action's default
+          go-version-file: go.mod
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build the image
+        run: docker build --tag watchtower:ci .

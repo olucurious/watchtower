@@ -1,0 +1,218 @@
+{
+ "exception": {
+  "values": [
+   {
+    "type": "TypeError",
+    "value": "member id missing for a reservation of 2 copies",
+    "stacktrace": {
+     "frames": [
+      {
+       "filename": "node:internal/modules/run_main",
+       "module": "run_main",
+       "function": "asyncRunEntryPointWithESMLoader",
+       "lineno": 101,
+       "colno": 5,
+       "in_app": false
+      },
+      {
+       "filename": "node:internal/modules/esm/loader",
+       "module": "loader",
+       "function": "?",
+       "lineno": 647,
+       "colno": 26,
+       "in_app": false
+      },
+      {
+       "filename": "node:internal/modules/esm/module_job",
+       "module": "module_job",
+       "function": "ModuleJob.run",
+       "lineno": 561,
+       "colno": 25,
+       "in_app": false
+      },
+      {
+       "filename": "/app/dist/main.mjs",
+       "module": "main",
+       "function": "?",
+       "lineno": 3,
+       "colno": 361,
+       "in_app": true,
+       "pre_context": [
+        "",
+        "!function(){try{var e=\"undefined\"!=typeof window?window:\"undefined\"!=typeof global?global:\"undefined\"!=typeof globalThis?globalThis:\"undefin {snip}"
+       ],
+       "context_line": "import*as r from\"@sentry/node\";function s(e,t){if(!e.id)throw new TypeError(`member id missing for a reservation of ${t} copies`);return{ok: {snip}",
+       "post_context": [
+        "//# sourceMappingURL=main.mjs.map",
+        "",
+        "//# debugId=c15ec507-acfd-5e0f-8e7d-28eddc80f480"
+       ]
+      },
+      {
+       "filename": "/app/dist/main.mjs",
+       "module": "main",
+       "function": "o",
+       "lineno": 3,
+       "colno": 208,
+       "in_app": true,
+       "pre_context": [
+        "",
+        "!function(){try{var e=\"undefined\"!=typeof window?window:\"undefined\"!=typeof global?global:\"undefined\"!=typeof globalThis?globalThis:\"undefin {snip}"
+       ],
+       "context_line": "import*as r from\"@sentry/node\";function s(e,t){if(!e.id)throw new TypeError(`member id missing for a reservation of ${t} copies`);return{ok: {snip}",
+       "post_context": [
+        "//# sourceMappingURL=main.mjs.map",
+        "",
+        "//# debugId=c15ec507-acfd-5e0f-8e7d-28eddc80f480"
+       ]
+      },
+      {
+       "filename": "/app/dist/main.mjs",
+       "module": "main",
+       "function": "s",
+       "lineno": 3,
+       "colno": 63,
+       "in_app": true,
+       "pre_context": [
+        "",
+        "!function(){try{var e=\"undefined\"!=typeof window?window:\"undefined\"!=typeof global?global:\"undefined\"!=typeof globalThis?globalThis:\"undefin {snip}"
+       ],
+       "context_line": "import*as r from\"@sentry/node\";function s(e,t){if(!e.id)throw new TypeError(`member id missing for a reservation of ${t} copies`);return{ok: {snip}",
+       "post_context": [
+        "//# sourceMappingURL=main.mjs.map",
+        "",
+        "//# debugId=c15ec507-acfd-5e0f-8e7d-28eddc80f480"
+       ]
+      }
+     ]
+    },
+    "mechanism": {
+     "type": "generic",
+     "handled": true
+    }
+   }
+  ]
+ },
+ "event_id": "9b40ab720168413a845e7ab1f79fcccb",
+ "level": "error",
+ "platform": "node",
+ "contexts": {
+  "trace": {
+   "trace_id": "2939d0e767304eb9aefff9b31a42eadf",
+   "span_id": "ac243bff5702560d"
+  },
+  "runtime": {
+   "name": "node",
+   "version": "v24.21.0"
+  },
+  "app": {
+   "app_start_time": "2026-10-02T13:11:06.085Z",
+   "app_memory": 105639936,
+   "free_memory": 21606944768
+  },
+  "os": {
+   "kernel_version": "6.12.111+deb13-cloud-amd64",
+   "name": "Debian",
+   "version": "13.7\n"
+  },
+  "device": {
+   "boot_time": "2026-10-01T10:37:34.483Z",
+   "arch": "x64",
+   "memory_size": 33662779392,
+   "free_memory": 21606944768,
+   "processor_count": 6,
+   "cpu_description": "Intel(R) Core(TM) i7-9700 CPU @ 3.00GHz",
+   "processor_frequency": 0
+  },
+  "culture": {
+   "locale": "en-US",
+   "timezone": "Africa/Lagos"
+  },
+  "cloud_resource": {}
+ },
+ "server_name": "fixture-host",
+ "timestamp": 1790946666.484,
+ "environment": "production",
+ "release": "library-web@2.4.0",
+ "sdk": {
+  "integrations": [
+   "EventFilters",
+   "FunctionToString",
+   "LinkedErrors",
+   "Dedupe",
+   "RequestData",
+   "NodeSystemError",
+   "ConversationId",
+   "Console",
+   "Http",
+   "NodeFetch",
+   "OnUncaughtException",
+   "OnUnhandledRejection",
+   "ContextLines",
+   "LocalVariablesAsync",
+   "Context",
+   "ChildProcess",
+   "WorkerThreads",
+   "ProcessSession",
+   "Modules",
+   "Express",
+   "Fastify",
+   "Hapi",
+   "Hono",
+   "Koa",
+   "Graphql",
+   "Mongo",
+   "Mongoose",
+   "Mysql",
+   "Mysql2",
+   "Redis",
+   "Postgres",
+   "Prisma",
+   "Tedious",
+   "Knex",
+   "GenericPool",
+   "Kafka",
+   "Amqplib",
+   "LruMemoizer",
+   "Dataloader",
+   "Aws",
+   "LangChain",
+   "LangGraph",
+   "Mastra",
+   "VercelAI",
+   "OpenAI",
+   "Anthropic_AI",
+   "Google_GenAI",
+   "Mistral",
+   "Groq",
+   "TogetherAI",
+   "TypeSafe",
+   "PostgresJs",
+   "Firebase",
+   "McpServer",
+   "SpanStreaming"
+  ],
+  "name": "sentry.javascript.node",
+  "version": "11.2.0",
+  "packages": [
+   {
+    "name": "npm:@sentry/node",
+    "version": "11.2.0"
+   }
+  ]
+ },
+ "modules": {
+  "@sentry/cli": "^3.8.0",
+  "@sentry/node": "^11.2.0",
+  "esbuild": "^0.28.2"
+ },
+ "debug_meta": {
+  "images": [
+   {
+    "type": "sourcemap",
+    "code_file": "/app/dist/main.mjs",
+    "debug_id": "c15ec507-acfd-5e0f-8e7d-28eddc80f480"
+   }
+  ]
+ }
+}

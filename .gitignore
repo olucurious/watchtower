@@ -1,0 +1,13 @@
+/bin/
+/watchtower
+.env
+*.key
+/web/node_modules/
+/internal/ui/dist/*
+!/internal/ui/dist/.gitkeep
+/internal/adapter/appsignal/testdata/out/
+/internal/adapter/appsignal/testdata/.mix*
+/internal/adapter/appsignal/testdata/.hex*
+
+# Local runtime files
+*.pid

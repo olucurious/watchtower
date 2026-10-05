@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "path": "/api/42/envelope/",
+  "query_keys": [],
+  "headers": {
+    "user-agent": "sentry-elixir/11.0.4",
+    "content-type": "application/octet-stream"
+  },
+  "auth_header_present": true
+}

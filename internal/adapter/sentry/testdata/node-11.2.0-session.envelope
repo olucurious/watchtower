@@ -1,0 +1,3 @@
+{"sent_at":"2026-10-02T13:07:06.300Z","sdk":{"name":"sentry.javascript.node","version":"11.2.0"}}
+{"type":"session"}
+{"sid":"146b3cedce6349ff9b7fbabfc4b9e6b0","init":true,"started":"2026-10-02T13:07:06.283Z","timestamp":"2026-10-02T13:07:06.299Z","status":"ok","errors":1,"did":"user-1","duration":0.016829967498779297,"attrs":{"release":"fixture-app@1.2.3","environment":"fixture","user_agent":"Node.js/24"}}

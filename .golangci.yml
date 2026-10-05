@@ -1,0 +1,35 @@
+version: "2"
+
+linters:
+  # The standard set (errcheck, govet, ineffassign, staticcheck, unused)
+  # plus a few that catch real bugs in this kind of code.
+  enable:
+    - bodyclose
+    - errorlint
+    - misspell
+    - nilerr
+    - rowserrcheck
+    - sqlclosecheck
+    - unconvert
+  exclusions:
+    presets:
+      # Unchecked Close on readers, fmt.Fprint to stdout and the like.
+      - std-error-handling
+    rules:
+      # Tests discard httptest bodies and skip error checks on setup
+      # calls whose failure the following assertion reports anyway.
+      - path: _test\.go
+        linters: [bodyclose, errcheck]
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/olucurious/watchtower
